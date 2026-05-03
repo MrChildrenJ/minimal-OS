@@ -15,6 +15,7 @@ typedef uint32_t vaddr_t;               // virtual memory addresses = uintptr_t 
 #define align_up(value, align)   __builtin_align_up(value, align)   // align must be power of 2
 #define is_aligned(value, align) __builtin_is_aligned(value, align) // checks if value is a multiple of align
 #define offsetof(type, member)   __builtin_offsetof(type, member)   // calculates the offset in bytes of a specific member from the beginning of its parent structure or union
+#define PAGE_SIZE 4096
 
 // variable argument handling
 #define va_list  __builtin_va_list      // 一個型別，用來宣告「指向當前讀取位置」的游標變數

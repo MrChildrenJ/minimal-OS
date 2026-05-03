@@ -31,4 +31,10 @@ SECTIONS {
     . = ALIGN(4);
     . += 128 * 1024;            /* 128KB (for kernel stack) */
     __stack_top = .;            /* grow downwardly */
+
+    /* linker can determine the position to avoid overlapping with the kernel's static data. */
+    . = ALIGN(4096);            /* Align to next multiple of 4096 if . is not multiple of 4096 */
+    __free_ram = .;             /* Free ram starts here */
+    . += 64 * 1024 * 1024; /* 64MB */
+    __free_ram_end = .;
 }
