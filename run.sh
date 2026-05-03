@@ -24,7 +24,7 @@ CFLAGS="-std=c11 -O2 -g3 -Wall -Wextra --target=riscv32-unknown-elf -fuse-ld=lld
 # -Tkernel.ld:              = -T,kernel.ld = use kernel.ld;
 # -Wl:                      pass kernel.ld to linker
 # -Map=kernel.map:          Generate a map file (記錄每個 symbol/section 被放到哪個地址, shows memory layout, for debug)
-$CC $CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf kernel.c
+$CC $CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf kernel.c common.c
 
 # Start QEMU
 $QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot -kernel kernel.elf
