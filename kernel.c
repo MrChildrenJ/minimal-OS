@@ -11,7 +11,6 @@ typedef uint32_t size_t;
 extern char __bss[], __bss_end[], __stack_top[];
 extern char __free_ram[], __free_ram_end[];
 
-
 // == Context Switch ==
 __attribute__((naked)) void switch_context(uint32_t* prev_sp, uint32_t* next_sp) {
     __asm__ __volatile__(
@@ -100,8 +99,7 @@ void proc_a_entry(void) {
     printf("starting process A\n");
     while (1) {
         putchar('A');
-        switch_context(&proc_a->sp, &proc_b->sp);   // args are addr to sp of two processes
-        delay();
+        yield();    // 
     }
 }
 
@@ -109,10 +107,43 @@ void proc_b_entry(void) {
     printf("starting process B\n");
     while (1) {
         putchar('B');
-        switch_context(&proc_b->sp, &proc_a->sp);
-        delay();
+        yield();
     }
 }
+
+
+// == Scheduler ==
+struct process* current_proc; // currently running process
+struct process* idle_proc;    // idle process
+
+void yield(void) {
+    // Search for a runnable process
+    struct process* next = idle_proc;
+    for (int i = 0; i < PROCS_MAX; i++) {
+        struct process* proc = &procs[(current_proc->pid + i) % PROCS_MAX];
+        if (proc->state == PROC_RUNNABLE && proc->pid > 0) {    // 1st runnable and not idle
+            next = proc;
+            break;
+        }
+    }
+
+    // if there's no runnable process, keep running current process
+    if (next == current_proc)
+        return;
+
+    // store addr of top of kernel stack to sscratch
+    __asm__ __volatile__(
+        "csrw sscratch, %[sscratch]\n"
+        :
+        : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
+    );
+
+    // context switch
+    struct process* prev = current_proc;
+    current_proc = next;
+    switch_context(&prev->sp, &next->sp);
+}
+
 
 // == Memory Allocation
 paddr_t alloc_pages(uint32_t n) {                       // allocate n pages; return "physical" addr of the start of new block
@@ -160,8 +191,13 @@ __attribute__((naked))          // again, no prologue/epilogue
 __attribute__((aligned(4)))
 void kernel_entry(void) {       // addr of this func is always in stvec reg
     __asm__ __volatile__(
-        "csrw sscratch, sp\n"       // save "value at sp" to sscratch
-        "addi sp, sp, -4 * 31\n"    // Allocate space (31 words) for the trap_frame struct
+        // Retrieve the kernel stack of the running process from sscratch.
+        // csrw sscratch, sp          // store curr sp to sscratch, assuming that sp is kernel stack
+        "csrrw sp, sscratch, sp\n"  // swap(sp, sscratch)   see line. 134 
+                                    // now sp = kernel (not user) stack of curr running process
+                                    // sscratch = original value of sp (user stack) at the time of the exception
+
+        "addi sp, sp, -4 * 31\n"    // Allocate 31-words space for trap_frame struct "on kernel stack"
         "sw ra,  4 * 0(sp)\n"       // all general purpose regs except for sp
         "sw gp,  4 * 1(sp)\n"       // ex: save gp to "sp + 4*1"
         "sw tp,  4 * 2(sp)\n"
@@ -193,8 +229,13 @@ void kernel_entry(void) {       // addr of this func is always in stvec reg
         "sw s10, 4 * 28(sp)\n"
         "sw s11, 4 * 29(sp)\n"
 
-        "csrr a0, sscratch\n"   // read original sp value from sscratch to a0
+        // Retrieve and save the sp at the time of exception.
+        "csrr a0, sscratch\n"   // read sp of original running proc to a0 for return
         "sw a0, 4 * 30(sp)\n"   // save to "30th slot" of trap_frame
+
+        // Reset the kernel stack, now sp points to bottom of trap_frame (addi sp, sp, -4 * 31)
+        "addi a0, sp, 4 * 31\n" // restore sp to original place
+        "csrw sscratch, a0\n"   // store a0's value into sscratch(kernel stack top)
 
         "mv a0, sp\n"           // store sp's value to a0 reg(1st arg)
         "call handle_trap\n"    // call handle_trap with arg a0, which is a ptr to the trap_frame struct
@@ -245,13 +286,20 @@ void handle_trap(struct trap_frame *f) {    // original stack pointer
 void kernel_main(void) {
     memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
 
+    printf("\n\n");
+
     WRITE_CSR(stvec, (uint32_t) kernel_entry);              // register trap handler
 
-    proc_a = create_process((uint32_t) proc_a_entry);   // arg: program counter, then set to sp
-    proc_b = create_process((uint32_t) proc_b_entry);
-    proc_a_entry();
+    idle_proc = create_process((uint32_t) NULL);        // created at startup as a process 
+    idle_proc->pid = 0;                                     // with process ID 0
+    current_proc = idle_proc;   // ensures that the execution context of the boot process is saved and 
+                                // restored as that of the idle process
 
-    PANIC("booted!");
+    proc_a = create_process((uint32_t) proc_a_entry);
+    proc_b = create_process((uint32_t) proc_b_entry);
+
+    yield();    // when called 1st time, idle -> proc_a
+    PANIC("switched to idle process");
 }
 
 __attribute__((section(".text.boot")))  // place this function in .text.boot
