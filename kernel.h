@@ -1,6 +1,18 @@
 #pragma once
 #include "common.h"
 
+#define PROCS_MAX 8       // Maximum number of processes
+#define PROC_UNUSED   0   // Unused process control structure
+#define PROC_RUNNABLE 1   // Runnable process
+
+// == Process ==
+struct process {
+    int pid;             // process ID
+    int state;           // process state: PROC_UNUSED or PROC_RUNNABLE
+    vaddr_t sp;          // Stack pointer
+    uint8_t stack[8192]; // Kernel stack, contains saved CPU regs, return addr (where it was called from), and local variables
+};
+
 // sbi: interface between kernel and firmware
 struct sbiret {
     long error;
@@ -70,3 +82,6 @@ struct trap_frame {
         uint32_t __tmp = (value);                                              \
         __asm__ __volatile__("csrw " #reg ", %0" ::"r"(__tmp));                \
     } while (0)
+
+struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long fid, long eid);
+void putchar(char ch);
