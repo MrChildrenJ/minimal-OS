@@ -4,7 +4,8 @@ ENTRY(boot)                     /* to reference "boot" which is usually in assem
 
 SECTIONS {
     . = 0x80200000;             /* on RISC-V/QEMU (virt machine), this is where OpenSBI hands off execution to the kernel */
-
+    __kernel_base = .;
+    
     .text :{                    /* Code section */
         KEEP(*(.text.boot));    /* forces the boot code to appear first; KEEP: not GC'd by linker even no reference */
         *(.text .text.*);       /* Then all other .text sections follow. */

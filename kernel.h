@@ -5,12 +5,21 @@
 #define PROC_UNUSED   0   // Unused process control structure
 #define PROC_RUNNABLE 1   // Runnable process
 
+// == Page Table ==
+#define SATP_SV32 (1u << 31)    // single bit in the satp reg, which indicates "enable paging in Sv32 mode"
+#define PAGE_V    (1 << 0)      // "Valid" bit (entry is enabled)
+#define PAGE_R    (1 << 1)      // Readable
+#define PAGE_W    (1 << 2)      // Writable
+#define PAGE_X    (1 << 3)      // Executable
+#define PAGE_U    (1 << 4)      // User (accessible in user mode)
+
 // == Process ==
 struct process {
-    int pid;             // process ID
-    int state;           // process state: PROC_UNUSED or PROC_RUNNABLE
-    vaddr_t sp;          // Stack pointer
-    uint8_t stack[8192]; // Kernel stack, contains saved CPU regs, return addr (where it was called from), and local variables
+    int pid;                // process ID
+    int state;              // process state: PROC_UNUSED or PROC_RUNNABLE
+    vaddr_t sp;             // Stack pointer
+    uint32_t* page_table;   // ptr to the first-level page table.
+    uint8_t stack[8192];    // Kernel stack, contains saved CPU regs, return addr (where it was called from), and local variables
 };
 
 // sbi: interface between kernel and firmware
@@ -87,3 +96,6 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, lo
 void putchar(char ch);
 
 void yield(void);
+paddr_t alloc_pages(uint32_t n);
+
+void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags);
