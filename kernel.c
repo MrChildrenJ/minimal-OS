@@ -11,6 +11,9 @@ typedef uint32_t size_t;
 extern char __bss[], __bss_end[], __stack_top[];
 extern char __free_ram[], __free_ram_end[];
 
+// == User Mode ==
+extern char _binary_shell_bin_start[], _binary_shell_bin_size[];
+
 
 // == Page Table ==
 /* | vpn1 (10) | vpn0 (10) | offset (12) |
@@ -44,6 +47,38 @@ void map_page(uint32_t* table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
 
 extern char __kernel_base[];
 
+// == User Mode ==
+/* __attribute__((naked)) is necessary here!
+ * This function is a one-way trip — once sret executes, we jump to user mode and never return.
+ * If the compiler auto-generates a prologue that saves registers to the stack, those stack operations corrupt sp
+ * Since we're about to hand control over to the user program, 
+ * which will reset sp itself — those operations are pointless and could actually cause problems
+ */
+__attribute__((naked)) void user_entry(void) {
+    __asm__ __volatile__(
+        /* When sret executes, the CPU sets the PC to the value in sepc = When sret jumps, it'll land at 0x01000000
+         * sepc was originally designed for trap handlers — when a trap occurs, hardware saves the faulting PC into it, and the handler uses sret to return. 
+         * Here we're repurposing that mechanism in reverse: instead of returning, we're entering user mode.
+         * spec: Supervisor Exception Program Counter
+         */
+        "csrw sepc, %[sepc]        \n"
+        
+        /* only bit 5 is 1 -> also set spp (Supervisor Previous Privilege, bit 8) to 0
+         * SPP = 0 : switch to U-mode
+         * SPP = 1 : switch to S-mode
+         */
+        "csrw sstatus, %[sstatus]  \n"
+
+        /* Supervisor Return
+         * 
+         */
+        "sret                      \n"
+        :
+        // Load USER_BASE (0x01000000) into any general-purpose reg ("r"), name it sepc, and reference it in the asm as %[sepc]
+        : [sepc] "r" (USER_BASE),
+          [sstatus] "r" (SSTATUS_SPIE)
+    );
+}
 
 // == Context Switch ==
 __attribute__((naked)) void switch_context(uint32_t* prev_sp, uint32_t* next_sp) {
@@ -89,7 +124,9 @@ __attribute__((naked)) void switch_context(uint32_t* prev_sp, uint32_t* next_sp)
 
 struct process procs[PROCS_MAX]; // All process control structures
 
-struct process* create_process(uint32_t pc) {
+// Before: take pc as arg
+// Now: take the ptr to the exec image (image) and the image size (image_size) as args
+struct process* create_process(const void *image, size_t image_size) {
     // Find an unused process control structure.
     struct process* curr = NULL;
     int i;
@@ -111,12 +148,30 @@ struct process* create_process(uint32_t pc) {
         *--sp = 0;  // set s0 to s11 as zero
     }
 
-    *--sp = pc;                     // ra   save the value of prog counter into "ra"! (for return)
+    *--sp = (uint32_t) user_entry;
 
     // Map kernel pages.
     uint32_t* page_table = (uint32_t*) alloc_pages(1);
+
     for (paddr_t paddr = (paddr_t) __kernel_base; paddr < (paddr_t) __free_ram_end; paddr += PAGE_SIZE) {
         map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+    }
+
+    /* Map user pages:
+     *   Copies the execution image page by page for the specified size and maps it to the process' page table.
+     *   If we map the execution image "directly" without copying it, processes of the same application would 
+     *   end up sharing the same physical pages. It will ruin the memory isolation.
+     */
+    for (uint32_t off = 0; off < image_size; off += PAGE_SIZE) {
+        paddr_t page = alloc_pages(1);
+
+        // Handle the case where the data to be copied is smaller than the page size
+        size_t remaining = image_size - off;
+        size_t copy_size = PAGE_SIZE <= remaining ? PAGE_SIZE : remaining;
+
+        // Fill and map the page.
+        memcpy((void *) page, image + off, copy_size);
+        map_page(page_table, USER_BASE + off, page, PAGE_U | PAGE_R | PAGE_W | PAGE_X);
     }
 
     // Initialize fields.
@@ -333,17 +388,21 @@ void kernel_main(void) {
 
     printf("\n\n");
 
-    WRITE_CSR(stvec, (uint32_t) kernel_entry);              // register trap handler
+    // Register trap handler
+    WRITE_CSR(stvec, (uint32_t) kernel_entry);              
 
-    idle_proc = create_process((uint32_t) NULL);        // created at startup as a process 
-    idle_proc->pid = 0;                                     // with process ID 0
-    current_proc = idle_proc;   // ensures that the execution context of the boot process is saved and 
-                                // restored as that of the idle process
+    // Created at startup as process; update from taking pc as arg to taking image & image_size as args
+    idle_proc = create_process(NULL, 0);
+    
+    // With process ID 0
+    idle_proc->pid = 0;
+    
+    // Ensures that the execution context of the boot process is saved and restored as that of the idle process
+    current_proc = idle_proc;
 
-    proc_a = create_process((uint32_t) proc_a_entry);
-    proc_b = create_process((uint32_t) proc_b_entry);
+    create_process(_binary_shell_bin_start, (size_t) _binary_shell_bin_size);
 
-    yield();    // when called 1st time, idle -> proc_a
+    yield();
     PANIC("switched to idle process");
 }
 
