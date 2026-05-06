@@ -1,14 +1,15 @@
 #!/bin/bash
-set -xue
+
 # -x: trace mode, print each command before executing (for debug)
 # -u: error on undefined variables
 # -e: exit immediately if any command fails (non-zero status)
 # fail fast + easier debugging
+set -xue
 
-QEMU=qemu-system-riscv32
 # QEMU file path
 # QEMU points to the executable qemu-system-riscv32
 # Target binary of QEMU for 32-bit RISC-V
+QEMU=qemu-system-riscv32
 
 # Path to clang and compiler flags
 # -g3:                          debug info (max level)
@@ -20,11 +21,18 @@ QEMU=qemu-system-riscv32
 CC=/opt/homebrew/opt/llvm/bin/clang
 CFLAGS="-std=c11 -O2 -g3 -Wall -Wextra --target=riscv32-unknown-elf -fuse-ld=lld -fno-stack-protector -ffreestanding -nostdlib"
 
+OBJCOPY=/opt/homebrew/opt/llvm/bin/llvm-objcopy
+
+# Build the shell (application)
+$CC $CFLAGS -Wl,-Tuser.ld -Wl,-Map=shell.map -o shell.elf shell.c user.c common.c
+$OBJCOPY --set-section-flags .bss=alloc,contents -O binary shell.elf shell.bin
+$OBJCOPY -Ibinary -Oelf32-littleriscv shell.bin shell.bin.o
+
 # Build the kernel (compile + link → kernel.elf)
 # -Tkernel.ld:              = -T,kernel.ld = use kernel.ld;
 # -Wl:                      pass kernel.ld to linker
 # -Map=kernel.map:          Generate a map file (記錄每個 symbol/section 被放到哪個地址, shows memory layout, for debug)
-$CC $CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf kernel.c common.c
+$CC $CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf kernel.c common.c shell.bin.o
 
 # Start QEMU
 $QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot -kernel kernel.elf

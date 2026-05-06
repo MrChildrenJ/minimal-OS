@@ -6,16 +6,19 @@ SECTIONS {
     . = 0x80200000;             /* on RISC-V/QEMU (virt machine), this is where OpenSBI hands off execution to the kernel */
     __kernel_base = .;
     
-    .text :{                    /* Code section */
+    /* machine code */
+    .text :{                    
         KEEP(*(.text.boot));    /* forces the boot code to appear first; KEEP: not GC'd by linker even no reference */
         *(.text .text.*);       /* Then all other .text sections follow. */
     }
 
-    .rodata : ALIGN(4) {        /* rodata: read-only; 4-bytes aligned */
+    /* read-only data */
+    .rodata : ALIGN(4) {
         *(.rodata .rodata.*);   /* string literals, const globals */
     }
 
-    .data : ALIGN(4) {          /* Initialized global/static variables */
+    /* data (global / statci variables) with initial values */
+    .data : ALIGN(4) {
         *(.data .data.*);
     }
 
