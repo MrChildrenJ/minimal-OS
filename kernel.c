@@ -318,6 +318,34 @@ struct process* create_process(const void *image, size_t image_size) {
     return curr;
 }
 
+struct process* create_kernel_process(void (*pc)(void)) {
+    struct process* curr = NULL;
+    int i;
+    for (i = 0; i < PROCS_MAX; i++) {
+        if (procs[i].state == PROC_UNUSED) {
+            curr = &procs[i];
+            break;
+        }
+    }
+    if (!curr) PANIC("no free process slots");
+
+    uint32_t* sp = (uint32_t*) &curr->stack[sizeof(curr->stack)];
+    for (int j = 11; j >= 0; j--)
+        *--sp = 0;
+    *--sp = (uint32_t) pc;  // ra points directly to kernel function, no user_entry
+
+    uint32_t* page_table = (uint32_t*) alloc_pages(1);
+    for (paddr_t paddr = (paddr_t) __kernel_base; paddr < (paddr_t) __free_ram_end; paddr += PAGE_SIZE)
+        map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+    map_page(page_table, VIRTIO_BLK_PADDR, VIRTIO_BLK_PADDR, PAGE_R | PAGE_W);
+
+    curr->pid = i + 1;
+    curr->state = PROC_RUNNABLE;
+    curr->sp = (uint32_t) sp;
+    curr->page_table = page_table;
+    return curr;
+}
+
 // == Context Switch Testing ==
 void delay(void) {
     for (int i = 0; i < 30000000; i++)
@@ -343,10 +371,14 @@ void proc_b_entry(void) {
     }
 }
 
-
 // == Scheduler ==
 struct process* current_proc; // currently running process
 struct process* idle_proc;    // idle process
+
+struct {
+    uint32_t count;
+    uint32_t total_cycles;
+} ctx_switch_stat;
 
 void yield(void) {
     // Search for a runnable process
@@ -377,7 +409,61 @@ void yield(void) {
     // context switch
     struct process* prev = current_proc;
     current_proc = next;
+    uint32_t t0 = READ_CSR(cycle);
     switch_context(&prev->sp, &next->sp);
+    // delta = time this process was off-CPU (suspended until someone switched back)
+    ctx_switch_stat.total_cycles += READ_CSR(cycle) - t0;
+    ctx_switch_stat.count++;
+}
+
+// == Context Switch Benchmark ==
+// Two workers ping-pong: A(pid=2) yields → finds B(pid=3), B yields → finds A.
+// idle stays suspended until both workers exit.
+static void print_cpi(uint32_t cycles, uint32_t instret); // forward decl, defined in syscall section
+
+#define BENCH_ROUNDS 1000
+static volatile int bench_counter;
+static volatile int bench_workers_done;
+static uint32_t bench_oneway_avg;
+static uint32_t bench_cycles;
+static uint32_t bench_instret;
+
+void bench_worker_pair(void) {
+    while (bench_counter < BENCH_ROUNDS) {
+        bench_counter++;
+        yield();
+    }
+    bench_workers_done++;
+    current_proc->state = PROC_EXITED;
+    yield();
+    PANIC("unreachable");
+}
+
+void run_ctx_switch_bench(void) {
+    ctx_switch_stat.count = 0;
+    ctx_switch_stat.total_cycles = 0;
+    bench_counter = 0;
+    bench_workers_done = 0;
+
+    create_kernel_process(bench_worker_pair);  // worker A
+    create_kernel_process(bench_worker_pair);  // worker B
+
+    uint32_t t0 = READ_CSR(cycle);
+    uint32_t i0 = READ_CSR(instret);
+    while (bench_workers_done < 2)
+        yield();
+    uint32_t total_cycles  = READ_CSR(cycle)   - t0;
+    uint32_t total_instret = READ_CSR(instret) - i0;
+
+    bench_oneway_avg = total_cycles / BENCH_ROUNDS;
+    bench_cycles     = total_cycles;
+    bench_instret    = total_instret;
+
+    // BENCH_ROUNDS total one-way switches between the two workers
+    printf("[bench] ctx_switch: %u switches, one-way avg=%u cycles, CPI=",
+           (uint32_t) BENCH_ROUNDS, bench_oneway_avg);
+    print_cpi(bench_cycles, bench_instret);
+    printf("\n");
 }
 
 
@@ -608,12 +694,50 @@ void fs_flush(void) {
 }
 
 // == System Call ==
-void handle_syscall(struct trap_frame *f) { // f: (31) regs at the time of exception
-    switch (f->a3) {
+struct syscall_stat {
+    uint32_t count;
+    uint32_t total_cycles;
+    uint32_t total_instret;
+};
+struct syscall_stat syscall_stats[6]; // index = SYS_* constant (1-5)
+
+static const char *syscall_names[] = {"?", "putchar", "getchar", "exit", "readfile", "writefile"};
+
+static void print_cpi(uint32_t cycles, uint32_t instret) {
+    if (instret == 0) { printf("N/A"); return; }
+    printf("%u.%u", cycles / instret, (cycles % instret) * 10 / instret);
+}
+
+static void print_syscall_stats(void) {
+    printf("--- syscall latency ---\n");
+    for (int i = 1; i <= 5; i++) {
+        if (syscall_stats[i].count == 0)
+            continue;
+        if (i == SYS_GETCHAR) {
+            printf("  getchar:   count=%u (skipped: dominated by keystroke wait)\n",
+                   syscall_stats[i].count);
+            continue;
+        }
+        uint32_t avg_c = syscall_stats[i].total_cycles  / syscall_stats[i].count;
+        uint32_t avg_i = syscall_stats[i].total_instret / syscall_stats[i].count;
+        printf("  %s: count=%u avg_cycles=%u avg_instret=%u CPI=",
+               syscall_names[i], syscall_stats[i].count, avg_c, avg_i);
+        print_cpi(avg_c, avg_i);
+        printf("\n");
+    }
+}
+
+void handle_syscall(struct trap_frame *f) {
+    uint32_t t0 = READ_CSR(cycle);
+    uint32_t i0 = READ_CSR(instret);
+    int sysno = f->a3;
+
+    switch (sysno) {
         case SYS_PUTCHAR:
             putchar(f->a0);
             break;
         case SYS_GETCHAR:
+            // note: total_cycles includes wait time when no char is available
             while (1) {
                 long ch = getchar();
                 if (ch >= 0) {
@@ -624,8 +748,14 @@ void handle_syscall(struct trap_frame *f) { // f: (31) regs at the time of excep
             }
             break;
         case SYS_EXIT:
+            printf("=== Performance Summary ===\n");
+            print_syscall_stats();
+            printf("--- context switch (boot bench, %u switches) ---\n",
+                   (uint32_t) BENCH_ROUNDS);
+            printf("  one-way avg=%u cycles, CPI=", bench_oneway_avg);
+            print_cpi(bench_cycles, bench_instret);
+            printf("\n");
             printf("process %d exited\n", current_proc->pid);
-            // In production, we should release resources, such as page table and allocated memory regions
             current_proc->state = PROC_EXITED;
             yield();
             PANIC("unreachable");
@@ -644,7 +774,7 @@ void handle_syscall(struct trap_frame *f) { // f: (31) regs at the time of excep
             if (len > (int) sizeof(file->data))
                 len = file->size;
 
-            if (f->a3 == SYS_WRITEFILE) {
+            if (sysno == SYS_WRITEFILE) {
                 memcpy(file->data, buf, len);
                 file->size = len;
                 fs_flush();
@@ -657,6 +787,13 @@ void handle_syscall(struct trap_frame *f) { // f: (31) regs at the time of excep
         }
         default:
             PANIC("unexpected syscall a3=%x\n", f->a3);
+    }
+
+    // SYS_EXIT never reaches here (yield() doesn't return)
+    if (sysno >= 1 && sysno <= 5) {
+        syscall_stats[sysno].count++;
+        syscall_stats[sysno].total_cycles  += READ_CSR(cycle)   - t0;
+        syscall_stats[sysno].total_instret += READ_CSR(instret) - i0;
     }
 }
 
@@ -691,7 +828,13 @@ void kernel_main(void) {
     // Register trap handler
     WRITE_CSR(stvec, (uint32_t) kernel_entry);        
 
+    uint32_t c0 = READ_CSR(cycle);
+    uint32_t i0 = READ_CSR(instret);
     virtio_blk_init();
+    uint32_t c1 = READ_CSR(cycle);
+    uint32_t i1 = READ_CSR(instret);
+    printf("[perf] virtio_blk_init: cycles=%d instret=%d\n", c1 - c0, i1 - i0);
+
     fs_init();
 
     char buf[SECTOR_SIZE];
@@ -709,6 +852,8 @@ void kernel_main(void) {
     
     // Ensures that the execution context of the boot process is saved and restored as that of the idle process
     current_proc = idle_proc;
+
+    run_ctx_switch_bench();
 
     create_process(_binary_shell_bin_start, (size_t) _binary_shell_bin_size);
 

@@ -44,6 +44,18 @@ void printf(const char* fmt, ...) {
 
                     break;
                 }
+                case 'u': { // Print an unsigned integer in decimal.
+                    unsigned value = va_arg(vargs, unsigned);
+                    unsigned divisor = 1;
+                    while (value / divisor > 9)
+                        divisor *= 10;
+                    while (divisor > 0) {
+                        putchar('0' + value / divisor);
+                        value %= divisor;
+                        divisor /= 10;
+                    }
+                    break;
+                }
                 case 'x': { // Print an integer in hexadecimal.
                     putchar('0');
                     putchar('x');
