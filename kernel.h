@@ -19,6 +19,10 @@
 // SPIE: Supervisor Previous Interrupt Enable
 #define SSTATUS_SPIE (1 << 5)
 
+// == System Call ==
+#define SCAUSE_ECALL 8
+#define PROC_EXITED   2
+
 // == Process ==
 struct process {
     int pid;                // process ID
@@ -100,6 +104,7 @@ struct trap_frame {
 
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long fid, long eid);
 void putchar(char ch);
+long getchar(void);
 
 void yield(void);
 paddr_t alloc_pages(uint32_t n);

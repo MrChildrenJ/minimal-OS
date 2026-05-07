@@ -23,6 +23,11 @@ typedef uint32_t vaddr_t;               // virtual memory addresses = uintptr_t 
 #define va_end   __builtin_va_end       // Clean up when done
 #define va_arg   __builtin_va_arg       // 從游標位置讀取一個 type 型別的值，並將游標前進
 
+// == System Call ==
+#define SYS_PUTCHAR 1
+#define SYS_GETCHAR 2
+#define SYS_EXIT    3
+
 void *memset(void *buf, char c, size_t n);
 void *memcpy(void *dst, const void *src, size_t n);
 char *strcpy(char *dst, const char *src);
