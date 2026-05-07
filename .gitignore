@@ -1,4 +1,4 @@
-Note.md
+*.md
 *.elf
 *.map
 qemu.log
