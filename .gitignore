@@ -1,4 +1,5 @@
 *.md
 *.elf
 *.map
+*.pdf
 qemu.log
