@@ -35,11 +35,19 @@ $OBJCOPY -Ibinary -Oelf32-littleriscv shell.bin shell.bin.o
 $CC $CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf kernel.c common.c shell.bin.o
 
 # Start QEMU
-$QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot -kernel kernel.elf
+
+(cd disk && tar cf ../disk.tar --format=ustar *.txt) 
+
+$QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot \
+    -d unimp,guest_errors,int,cpu_reset -D qemu.log \
+    -drive id=drive0,file=disk.tar,format=raw,if=none \
+    -device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 \
+    -kernel kernel.elf
 # -machine virt: uses generic virtual board; minimal, clean environment (common for OS dev)
 # -bios default: Uses QEMU’s built-in firmware (OpenSBI), handles early boot before OS
 # -serial mon:stdio:
 #       * Connect QEMU's standard input/output to the virtual machine's serial port
 #       * Specifying mon: allows switching to the QEMU monitor by pressing Ctrl+A then C.
 # --no-reboot: If the guest crashes or exits, no reboot, QEMU stops
-# --
+# -drive id=drive0: define disk named 'drive0', using lorem.txt as disk image in raw format
+# -bus=virtio-mmio-bus.0: maps the device into a virtio-mmio bus
