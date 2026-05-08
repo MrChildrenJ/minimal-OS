@@ -224,3 +224,12 @@ void yield(void);
 paddr_t alloc_pages(uint32_t n);
 
 void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags);
+
+void kernel_entry(void);
+void virtio_blk_init(void);
+void read_write_disk(void *buf, unsigned sector, int is_write);
+void fs_init(void);
+struct file *fs_lookup(const char *filename);
+void fs_flush(void);
+struct process *create_process(const void *image, size_t image_size);
+void run_ctx_switch_bench(void);
